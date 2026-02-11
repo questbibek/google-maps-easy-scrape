@@ -5,96 +5,144 @@ document.addEventListener('DOMContentLoaded', function () {
         const downloadCsvButton = document.getElementById('downloadCsvButton');
         const resultsTable = document.getElementById('resultsTable');
         const filenameInput = document.getElementById('filenameInput');
+        const searchForm = document.getElementById('searchForm');
+        const searchTermInput = document.getElementById('searchTermInput');
+        const locationsInput = document.getElementById('locationsInput');
+        const progressInfo = document.getElementById('progressInfo');
+        
+        let allResults = [];
 
-        if (currentTab && currentTab.url.includes("://www.google.com/maps/search")) {
+        if (currentTab && currentTab.url.includes("://www.google.com/maps")) {
             document.getElementById('message').textContent = "Let's scrape Google Maps!";
+            searchForm.style.display = 'block';
             actionButton.disabled = false;
             actionButton.classList.add('enabled');
         } else {
             const messageElement = document.getElementById('message');
             messageElement.innerHTML = '';
             const linkElement = document.createElement('a');
-            linkElement.href = 'https://www.google.com/maps/search/';
-            linkElement.textContent = "Go to Google Maps Search.";
+            linkElement.href = 'https://www.google.com/maps/';
+            linkElement.textContent = "Go to Google Maps.";
             linkElement.target = '_blank';
             messageElement.appendChild(linkElement);
 
             actionButton.style.display = 'none';
             downloadCsvButton.style.display = 'none';
             filenameInput.style.display = 'none';
+            searchForm.style.display = 'none';
         }
 
-        actionButton.addEventListener('click', function () {
+        actionButton.addEventListener('click', async function () {
+            const searchTerm = searchTermInput.value.trim();
+            const locationsText = locationsInput.value.trim();
+
+            if (!searchTerm) {
+                alert('Please enter a search term!');
+                return;
+            }
+
+            if (!locationsText) {
+                alert('Please enter at least one location!');
+                return;
+            }
+
+            // Parse locations (comma-separated)
+            const locations = locationsText.split(',').map(loc => loc.trim()).filter(loc => loc);
+
+            if (locations.length === 0) {
+                alert('Please enter valid locations!');
+                return;
+            }
+
+            // Disable inputs during scraping
             actionButton.disabled = true;
+            searchTermInput.disabled = true;
+            locationsInput.disabled = true;
             actionButton.textContent = 'Scraping...';
+            allResults = [];
             
-            chrome.scripting.executeScript(
-                {
-                    target: { tabId: currentTab.id },
-                    func: scrapeDataWithDetailedView,
-                },
-                function (results) {
-                    actionButton.disabled = false;
-                    actionButton.textContent = 'Start Scraping';
-                    
-                    if (chrome.runtime.lastError) {
-                        console.error('Chrome runtime error:', chrome.runtime.lastError);
-                        alert('Error: ' + chrome.runtime.lastError.message);
-                        return;
-                    }
-                    
-                    while (resultsTable.firstChild) {
-                        resultsTable.removeChild(resultsTable.firstChild);
-                    }
+            // Clear existing table
+            while (resultsTable.firstChild) {
+                resultsTable.removeChild(resultsTable.firstChild);
+            }
 
-                    const headers = ['Title', 'Rating', 'Reviews', 'Phone', 'Website', 'Address', 'Google Maps Link'];
-                    const headerRow = document.createElement('tr');
-                    headers.forEach(headerText => {
-                        const header = document.createElement('th');
-                        header.textContent = headerText;
-                        headerRow.appendChild(header);
-                    });
-                    resultsTable.appendChild(headerRow);
+            // Add headers
+            const headers = ['Location', 'Title', 'Rating', 'Reviews', 'Phone', 'Website', 'Address', 'Google Maps Link'];
+            const headerRow = document.createElement('tr');
+            headers.forEach(headerText => {
+                const header = document.createElement('th');
+                header.textContent = headerText;
+                headerRow.appendChild(header);
+            });
+            resultsTable.appendChild(headerRow);
 
-                    if (!results || !results[0] || !results[0].result) {
-                        alert('No results found. Check console (F12) for errors.');
-                        return;
-                    }
-                    
-                    results[0].result.forEach(function (item) {
-                        const row = document.createElement('tr');
-                        ['title', 'rating', 'reviewCount', 'phone', 'website', 'address', 'href'].forEach(function (key) {
-                            const cell = document.createElement('td');
-                            cell.textContent = item[key] || '';
-                            row.appendChild(cell);
-                        });
-                        resultsTable.appendChild(row);
+            // Scrape each location
+            for (let i = 0; i < locations.length; i++) {
+                const location = locations[i];
+                progressInfo.style.display = 'block';
+                progressInfo.textContent = `Scraping ${i + 1}/${locations.length}: ${searchTerm} in ${location}...`;
+
+                try {
+                    // Perform search for this location
+                    const searchQuery = `${searchTerm} in ${location}`;
+                    await performSearch(currentTab.id, searchQuery);
+
+                    // Wait for results to load
+                    await new Promise(r => setTimeout(r, 3000));
+
+                    // Scrape the results
+                    const results = await scrapeCurrentPage(currentTab.id);
+
+                    // Add location to each result
+                    results.forEach(result => {
+                        result.location = location;
+                        allResults.push(result);
                     });
 
-                    if (results[0].result.length > 0) {
-                        downloadCsvButton.disabled = false;
-                        
-                        // AUTO EXPORT CSV
-                        const csv = tableToCsv(resultsTable);
-                        let filename = filenameInput.value.trim();
-                        if (!filename) {
-                            // Generate filename with timestamp
-                            const now = new Date();
-                            const timestamp = now.getFullYear() + 
-                                            String(now.getMonth() + 1).padStart(2, '0') + 
-                                            String(now.getDate()).padStart(2, '0') + '_' +
-                                            String(now.getHours()).padStart(2, '0') + 
-                                            String(now.getMinutes()).padStart(2, '0');
-                            filename = `google-maps-data_${timestamp}.csv`;
-                        } else {
-                            filename = filename.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.csv';
-                        }
-                        downloadCsv(csv, filename);
-                        
-                        alert(`Successfully scraped ${results[0].result.length} results!\nCSV downloaded as: ${filename}`);
-                    }
+                    // Update table with new results
+                    updateTable(results, location);
+
+                    console.log(`Scraped ${results.length} results from ${location}`);
+
+                } catch (error) {
+                    console.error(`Error scraping ${location}:`, error);
+                    progressInfo.textContent = `Error scraping ${location}: ${error.message}`;
                 }
-            );
+
+                // Delay between locations
+                if (i < locations.length - 1) {
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+            }
+
+            // Re-enable inputs
+            actionButton.disabled = false;
+            searchTermInput.disabled = false;
+            locationsInput.disabled = false;
+            actionButton.textContent = 'Start Scraping';
+            progressInfo.textContent = `✓ Complete! Scraped ${allResults.length} total results from ${locations.length} location(s)`;
+
+            if (allResults.length > 0) {
+                downloadCsvButton.disabled = false;
+                
+                // AUTO EXPORT CSV
+                const csv = tableToCsv(resultsTable);
+                let filename = filenameInput.value.trim();
+                if (!filename) {
+                    const now = new Date();
+                    const timestamp = now.getFullYear() + 
+                                    String(now.getMonth() + 1).padStart(2, '0') + 
+                                    String(now.getDate()).padStart(2, '0') + '_' +
+                                    String(now.getHours()).padStart(2, '0') + 
+                                    String(now.getMinutes()).padStart(2, '0');
+                    filename = `google-maps-${searchTerm.replace(/\s+/g, '-')}_${timestamp}.csv`;
+                } else {
+                    filename = filename.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.csv';
+                }
+                downloadCsv(csv, filename);
+                
+                alert(`Successfully scraped ${allResults.length} results!\nCSV downloaded as: ${filename}`);
+            }
         });
 
         downloadCsvButton.addEventListener('click', function () {
@@ -113,6 +161,57 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             downloadCsv(csv, filename);
         });
+
+        function updateTable(results, location) {
+            results.forEach(function (item) {
+                const row = document.createElement('tr');
+                ['location', 'title', 'rating', 'reviewCount', 'phone', 'website', 'address', 'href'].forEach(function (key) {
+                    const cell = document.createElement('td');
+                    cell.textContent = item[key] || '';
+                    row.appendChild(cell);
+                });
+                resultsTable.appendChild(row);
+            });
+        }
+
+        async function performSearch(tabId, searchQuery) {
+            return chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                func: (query) => {
+                    // Find the search input
+                    const searchInput = document.querySelector('input.UGojuc');
+                    if (searchInput) {
+                        searchInput.value = query;
+                        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        
+                        // Trigger search
+                        const searchButton = document.querySelector('button.mL3xi');
+                        if (searchButton) {
+                            searchButton.click();
+                        } else {
+                            // Alternative: submit the form
+                            const form = document.querySelector('form.NhWQq');
+                            if (form) {
+                                form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                            }
+                        }
+                    }
+                },
+                args: [searchQuery]
+            });
+        }
+
+        async function scrapeCurrentPage(tabId) {
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                func: scrapeDataWithDetailedView,
+            });
+
+            if (results && results[0] && results[0].result) {
+                return results[0].result;
+            }
+            return [];
+        }
     });
 });
 
@@ -153,7 +252,7 @@ function scrapeDataWithDetailedView() {
                 const data = extractDetailPanelData();
                 data.href = links[i].href;
                 
-                console.log('Extracted:', data.title);
+                console.log('Extracted:', data.title, '- Reviews:', data.reviewCount);
                 results.push(data);
                 
                 await new Promise(r => setTimeout(r, 300));
@@ -214,23 +313,33 @@ function scrapeDataWithDetailedView() {
         };
 
         try {
-            // Title
             const titleEl = document.querySelector('.DUwDvf');
             data.title = titleEl?.textContent?.trim() || '';
 
-            // Rating
-            const ratingEl = document.querySelector('.F7nice span[aria-hidden="true"]');
-            data.rating = ratingEl?.textContent?.trim() || '';
+            const ratingDisplayEl = document.querySelector('.fontDisplayLarge');
+            data.rating = ratingDisplayEl?.textContent?.trim() || '';
             
-            // Review Count
-            const reviewEl = document.querySelector('.F7nice span[role="img"]');
-            if (reviewEl) {
-                const ariaLabel = reviewEl.getAttribute('aria-label');
-                const match = ariaLabel?.match(/(\d+)\s+review/i);
+            if (!data.rating) {
+                const ratingEl = document.querySelector('.F7nice span[aria-hidden="true"]');
+                data.rating = ratingEl?.textContent?.trim() || '';
+            }
+            
+            const reviewButtonEl = document.querySelector('button.GQjSyb .HHrUdb span');
+            if (reviewButtonEl) {
+                const reviewText = reviewButtonEl.textContent?.trim() || '';
+                const match = reviewText.match(/(\d+)\s+review/i);
                 data.reviewCount = match ? match[1] : '';
             }
+            
+            if (!data.reviewCount) {
+                const reviewEl = document.querySelector('.F7nice span[role="img"]');
+                if (reviewEl) {
+                    const ariaLabel = reviewEl.getAttribute('aria-label');
+                    const match = ariaLabel?.match(/(\d+)\s+review/i);
+                    data.reviewCount = match ? match[1] : '';
+                }
+            }
 
-            // Phone
             const phoneBtn = document.querySelector('[data-item-id*="phone"]');
             if (phoneBtn) {
                 const ariaLabel = phoneBtn.getAttribute('aria-label');
@@ -242,13 +351,11 @@ function scrapeDataWithDetailedView() {
                 }
             }
 
-            // Website
             const websiteLink = document.querySelector('a[data-item-id*="authority"]');
             if (websiteLink) {
                 data.website = websiteLink.textContent?.trim() || websiteLink.href || '';
             }
 
-            // Address
             const addressBtn = document.querySelector('[data-item-id="address"]');
             if (addressBtn) {
                 const addressText = addressBtn.querySelector('.Io6YTe');
